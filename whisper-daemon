@@ -1,0 +1,166 @@
+#!/usr/bin/env python3
+"""
+whisper-daemon: Background voice-to-text daemon.
+Press F9 to start recording, press F9 again to stop and paste.
+"""
+
+import subprocess
+import sys
+import os
+import tempfile
+import threading
+import time
+import signal as signal_module
+
+MODEL = sys.argv[1] if len(sys.argv) > 1 else "base"
+
+recording = False
+transcribing = False
+rec_proc = None
+audio_file = None
+status_proc = None
+lock = threading.Lock()
+
+
+RECORDING_SCRIPT = """
+import tkinter as tk
+root = tk.Tk()
+root.overrideredirect(True)
+root.attributes('-topmost', True)
+root.attributes('-alpha', 0.88)
+w,h=320,54
+sw=root.winfo_screenwidth()
+root.geometry(f'{w}x{h}+{(sw-w)//2}+48')
+root.configure(bg='#1c1c1c')
+dot = tk.Label(root, text='●', font=('Sans', 16), bg='#1c1c1c', fg='#e05555')
+dot.pack(side='left', padx=(16,6))
+tk.Label(root, text='Recording', font=('Sans', 16), bg='#1c1c1c', fg='#eeeeee').pack(side='left')
+tk.Label(root, text='   F9 to stop', font=('Sans', 11), bg='#1c1c1c', fg='#666666').pack(side='left')
+on=[True]
+def blink():
+    dot.config(fg='#e05555' if on[0] else '#5a2222')
+    on[0]=not on[0]
+    root.after(600, blink)
+blink()
+root.mainloop()
+"""
+
+TRANSCRIBING_SCRIPT = """
+import tkinter as tk
+root = tk.Tk()
+root.overrideredirect(True)
+root.attributes('-topmost', True)
+root.attributes('-alpha', 0.88)
+w,h=320,54
+sw=root.winfo_screenwidth()
+root.geometry(f'{w}x{h}+{(sw-w)//2}+48')
+root.configure(bg='#1c1c1c')
+lbl = tk.Label(root, text='Processing...', font=('Sans', 16), bg='#1c1c1c', fg='#66aacc')
+lbl.pack(expand=True)
+frames=['Processing.  ','Processing.. ','Processing...']
+i=[0]
+def anim():
+    i[0]=(i[0]+1)%3
+    lbl.config(text=frames[i[0]])
+    root.after(400, anim)
+anim()
+root.mainloop()
+"""
+
+
+def show_status(script):
+    global status_proc
+    if status_proc:
+        status_proc.terminate()
+        status_proc = None
+    status_proc = subprocess.Popen(
+        ["python3", "-c", script],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def hide_status():
+    global status_proc
+    if status_proc:
+        status_proc.terminate()
+        status_proc = None
+
+
+def start_recording():
+    global recording, rec_proc, audio_file
+    with lock:
+        if recording:
+            return
+        recording = True
+        f = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+        audio_file = f.name
+        f.close()
+        rec_proc = subprocess.Popen(
+            ["rec", "-r", "16000", "-c", "1", "-e", "signed", "-b", "16", audio_file],
+            stderr=subprocess.DEVNULL,
+        )
+    show_status(RECORDING_SCRIPT)
+
+
+def stop_and_transcribe():
+    global recording, transcribing, rec_proc, audio_file
+    with lock:
+        if not recording:
+            return
+        recording = False
+        transcribing = True
+        # Wait 0.8s so last words are captured, then SIGINT lets sox flush buffers cleanly
+        time.sleep(0.8)
+        rec_proc.send_signal(signal_module.SIGINT)
+        rec_proc.wait()
+        current_audio = audio_file
+        audio_file = None
+        rec_proc = None
+
+    show_status(TRANSCRIBING_SCRIPT)
+
+    def do_transcribe():
+        global transcribing
+        try:
+            segments, _ = model.transcribe(
+                current_audio,
+                beam_size=5,
+                condition_on_previous_text=False,
+            )
+            text = "".join(seg.text for seg in segments).strip()
+            text = text.rstrip("…").rstrip("...").strip()
+            if text:
+                proc = subprocess.Popen(
+                    ["xclip", "-selection", "clipboard", "-loops", "10"],
+                    stdin=subprocess.PIPE
+                )
+                proc.communicate(text.encode("utf-8"))
+                subprocess.run(["xdotool", "key", "--clearmodifiers", "ctrl+shift+v"])
+        finally:
+            transcribing = False
+            hide_status()
+            os.unlink(current_audio)
+
+    threading.Thread(target=do_transcribe, daemon=True).start()
+
+
+def on_press(key):
+    from pynput import keyboard
+    if key == keyboard.Key.f9:
+        if not recording:
+            start_recording()
+        else:
+            stop_and_transcribe()
+
+
+if __name__ == "__main__":
+    from pynput import keyboard
+    from faster_whisper import WhisperModel
+
+    print(f"Loading model '{MODEL}'...", flush=True)
+    model = WhisperModel(MODEL, device="cpu", compute_type="int8")
+    print("✅ Ready. F9 = start / stop recording.", flush=True)
+
+    with keyboard.Listener(on_press=on_press) as listener:
+        listener.join()

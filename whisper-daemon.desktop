@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Whisper Daemon
+Exec=/home/stephanie/.local/bin/whisper-daemon
+Hidden=false
+NoDisplay=false
+X-GNOME-Autostart-enabled=true
