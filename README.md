@@ -53,6 +53,47 @@ System starts → model loads into memory (once, ~5 seconds)
 
 ---
 
+## "Wait, is this safe to run?" — Security Transparency
+
+This tool does three things that look alarming on the surface. Here's what's actually happening:
+
+### 1. It listens to your keyboard globally (pynput)
+
+**What it looks like:** a keylogger.
+
+**What it actually does:** `pynput` is used to detect the F9 key only. The `on_press` function in the script receives every keypress event from the OS, checks `if key == keyboard.Key.f9`, and ignores everything else. No keystrokes are stored, logged, or transmitted anywhere. You can verify this by reading the ~10-line `on_press` function at the bottom of the `whisper-daemon` file.
+
+### 2. It accesses your microphone
+
+**What it looks like:** covert audio recording.
+
+**What it actually does:** Recording only starts when *you* press F9 — at which point a red indicator window appears at the top of your screen. Recording stops when you press F9 again. The audio is written to a temporary file in `/tmp/` (e.g. `/tmp/tmpXXXXXX.wav`), transcribed, and then **immediately deleted** (`os.unlink` in the script). There is no audio retention.
+
+### 3. It writes to your clipboard and simulates a paste keystroke
+
+**What it looks like:** clipboard hijacking.
+
+**What it actually does:** After transcription, the recognized text is written to your clipboard and Ctrl+Shift+V is simulated to paste it. This replaces whatever was in your clipboard with the transcribed text — intentionally, because that's the whole point. Nothing is read from your clipboard.
+
+### What this script does NOT do
+
+- No network requests (the script itself makes zero HTTP calls)
+- No writing to disk except one temporary `.wav` file in `/tmp/` (deleted after use)
+- No persistence mechanisms beyond the optional autostart `.desktop` file you set up yourself
+- No root/sudo required at runtime
+
+### How to verify this yourself
+
+The entire tool is a single Python file (`whisper-daemon`, ~160 lines). You can read it before running it:
+
+```bash
+cat whisper-daemon
+```
+
+The only external processes it spawns are: `rec` (audio recording), `python3 -c "..."` (status window), `xclip` (clipboard write), `xdotool` (paste keystroke). All of these are standard Linux utilities.
+
+---
+
 ## Installation
 
 ### Step 1 — Install system dependencies
